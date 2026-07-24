@@ -1,16 +1,22 @@
 import socket
 
-target = input("Enter target IP: ")
+# Ask the user for the target IP address
+target = input("Enter the target IP address: ")
 
-port = int(input("Enter port: "))
+print(f"\nScanning {target}...\n")
 
-scanner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+# Scan ports from 20 to 100
+for port in range(20, 101):
 
-result = scanner.connect_ex((target, port))
+    scanner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-if result == 0:
-    print("Port OPEN")
-else:
-    print("Port CLOSED")
+    scanner.settimeout(0.5)
 
-scanner.close()
+    result = scanner.connect_ex((target, port))
+
+    if result == 0:
+        print(f"Port {port}: OPEN")
+
+    scanner.close()
+
+print("\nScan completed.")
