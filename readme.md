@@ -11,8 +11,15 @@ Personal project developed in Python.
 ## Technologies
 
 - Python
-- Socket
+- Socket Programming
 - Networking
+
+## Current Features
+
+- Scan multiple TCP ports
+- Detect common network services
+- Display open ports
+- Fast scanning using socket timeout
 
 ## Author
 
