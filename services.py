@@ -1,7 +1,9 @@
 import socket
 
+# Ask the user for the target
 target = input("Enter IP address or hostname: ")
 
+# Common network services
 services = {
     20: "FTP Data",
     21: "FTP",
@@ -12,23 +14,26 @@ services = {
     67: "DHCP",
     68: "DHCP",
     69: "TFTP",
-    80: "HTTP",
-    110: "POP3",
-    123: "NTP",
-    143: "IMAP",
-    161: "SNMP",
-    389: "LDAP",
-    443: "HTTPS",
-    445: "SMB",
-    3306: "MySQL",
-    3389: "RDP",
-    8080: "HTTP Proxy"
+    80: "HTTP"
 }
 
+# Counter for open ports
+nbport = 0
+
+# Create the report file
+report = open("report.txt", "w")
+
+# Display header
 print("\nPython Network Scanner")
 print("-" * 35)
 print(f"Target : {target}\n")
 
+# Write header to the report
+report.write("Python Network Scanner\n")
+report.write("-" * 35 + "\n")
+report.write(f"Target : {target}\n\n")
+
+# Scan ports
 for port in range(20, 101):
 
     scanner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -43,4 +48,20 @@ for port in range(20, 101):
 
         print(f"Port {port:<5} OPEN   {service}")
 
+        report.write(f"Port {port:<5} OPEN   {service}\n")
+
+        nbport += 1
+
     scanner.close()
+
+# Footer
+print("-" * 35)
+print("Scan completed.")
+print(f"Total open ports : {nbport}")
+print("Report saved to report.txt")
+
+report.write("\n")
+report.write("-" * 35 + "\n")
+report.write(f"Total open ports : {nbport}\n")
+
+report.close()

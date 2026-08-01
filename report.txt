@@ -1,0 +1,9 @@
+Python Network Scanner
+-----------------------------------
+Target : scanme.nmap.org
+
+Port 22    OPEN   SSH
+Port 80    OPEN   HTTP
+
+-----------------------------------
+Total open ports : 2

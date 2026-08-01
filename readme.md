@@ -7,19 +7,22 @@ Personal project developed in Python.
 - TCP Port Scanning
 - Host Discovery
 - Service Detection
+- Automatic Report Generation
 
 ## Technologies
 
 - Python
 - Socket Programming
+- File Handling
 - Networking
 
 ## Current Features
 
 - Scan multiple TCP ports
 - Detect common network services
-- Display open ports
-- Fast scanning using socket timeout
+- Save results to a report file
+- Count open ports
+- Display scan summary
 
 ## Author
 
