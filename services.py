@@ -1,9 +1,8 @@
 import socket
+import threading
 
-# Ask the user for the target
 target = input("Enter IP address or hostname: ")
 
-# Common network services
 services = {
     20: "FTP Data",
     21: "FTP",
@@ -17,24 +16,11 @@ services = {
     80: "HTTP"
 }
 
-# Counter for open ports
-nbport = 0
+open_ports = []
+threads = []
 
-# Create the report file
-report = open("report.txt", "w")
 
-# Display header
-print("\nPython Network Scanner")
-print("-" * 35)
-print(f"Target : {target}\n")
-
-# Write header to the report
-report.write("Python Network Scanner\n")
-report.write("-" * 35 + "\n")
-report.write(f"Target : {target}\n\n")
-
-# Scan ports
-for port in range(20, 101):
+def scan_port(port):
 
     scanner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -48,20 +34,47 @@ for port in range(20, 101):
 
         print(f"Port {port:<5} OPEN   {service}")
 
-        report.write(f"Port {port:<5} OPEN   {service}\n")
-
-        nbport += 1
+        open_ports.append((port, service))
 
     scanner.close()
 
-# Footer
+
+print("\nPython Network Scanner")
 print("-" * 35)
-print("Scan completed.")
-print(f"Total open ports : {nbport}")
-print("Report saved to report.txt")
+print(f"Target : {target}\n")
+
+
+for port in range(20, 101):
+
+    thread = threading.Thread(target=scan_port, args=(port,))
+
+    threads.append(thread)
+
+    thread.start()
+
+
+for thread in threads:
+
+    thread.join()
+
+
+report = open("report.txt", "w")
+
+report.write("Python Network Scanner\n")
+report.write("-" * 35 + "\n")
+report.write(f"Target : {target}\n\n")
+
+for port, service in sorted(open_ports):
+
+    report.write(f"Port {port:<5} OPEN   {service}\n")
 
 report.write("\n")
 report.write("-" * 35 + "\n")
-report.write(f"Total open ports : {nbport}\n")
+report.write(f"Total open ports : {len(open_ports)}\n")
 
 report.close()
+
+print("-" * 35)
+print("Scan completed.")
+print(f"Total open ports : {len(open_ports)}")
+print("Report saved to report.txt")

@@ -2,6 +2,8 @@ Python Network Scanner
 -----------------------------------
 Target : scanme.nmap.org
 
+Date : 2026-08-01 15:38:52.377158
+
 Port 22    OPEN   SSH
 Port 80    OPEN   HTTP
 
