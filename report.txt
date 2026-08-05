@@ -2,10 +2,14 @@ Python Network Scanner
 -----------------------------------
 Target : scanme.nmap.org
 
-Date : 2026-08-01 15:38:52.377158
-
-Port 22    OPEN   SSH
 Port 80    OPEN   HTTP
+Banner : HTTP/1.1 200 OK
+Date: Wed, 05 Aug 2026 23:24:40 GMT
+Server: Apache/2.4.7 (Ubuntu)
+Accept-Ranges: bytes
+Vary: Accept-Encoding
+Connection: close
+Content-Type: text/html
 
 -----------------------------------
-Total open ports : 2
+Total open ports : 1

@@ -13,7 +13,10 @@ services = {
     67: "DHCP",
     68: "DHCP",
     69: "TFTP",
-    80: "HTTP"
+    80: "HTTP",
+    110: "POP3",
+    143: "IMAP",
+    443: "HTTPS"
 }
 
 open_ports = []
@@ -24,7 +27,7 @@ def scan_port(port):
 
     scanner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    scanner.settimeout(0.5)
+    scanner.settimeout(1)
 
     result = scanner.connect_ex((target, port))
 
@@ -32,9 +35,28 @@ def scan_port(port):
 
         service = services.get(port, "Unknown")
 
-        print(f"Port {port:<5} OPEN   {service}")
+        banner = "No Banner"
 
-        open_ports.append((port, service))
+        try:
+
+            if port == 80:
+                scanner.send(b"HEAD / HTTP/1.0\r\n\r\n")
+
+            data = scanner.recv(1024)
+
+            banner = data.decode(errors="ignore").strip()
+
+            if banner == "":
+                banner = "No Banner"
+
+        except:
+
+            banner = "No Banner"
+
+        print(f"Port {port:<5} OPEN   {service}")
+        print(f"Banner : {banner}\n")
+
+        open_ports.append((port, service, banner))
 
     scanner.close()
 
@@ -42,7 +64,6 @@ def scan_port(port):
 print("\nPython Network Scanner")
 print("-" * 35)
 print(f"Target : {target}\n")
-
 
 for port in range(20, 101):
 
@@ -52,11 +73,9 @@ for port in range(20, 101):
 
     thread.start()
 
-
 for thread in threads:
 
     thread.join()
-
 
 report = open("report.txt", "w")
 
@@ -64,11 +83,11 @@ report.write("Python Network Scanner\n")
 report.write("-" * 35 + "\n")
 report.write(f"Target : {target}\n\n")
 
-for port, service in sorted(open_ports):
+for port, service, banner in sorted(open_ports):
 
     report.write(f"Port {port:<5} OPEN   {service}\n")
+    report.write(f"Banner : {banner}\n\n")
 
-report.write("\n")
 report.write("-" * 35 + "\n")
 report.write(f"Total open ports : {len(open_ports)}\n")
 

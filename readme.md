@@ -1,6 +1,6 @@
 # Python Network Scanner
 
-A Python-based network scanner developed to learn socket programming, networking concepts, and concurrent programming.
+A Python-based network scanner developed to learn socket programming, networking, concurrent programming, and network service identification.
 
 ---
 
@@ -9,8 +9,8 @@ A Python-based network scanner developed to learn socket programming, networking
 - TCP Port Scanning
 - Service Detection
 - Multi-threaded Scanning
+- Banner Grabbing
 - Automatic Report Generation
-- Fast Concurrent Port Scan
 
 ---
 
@@ -29,18 +29,21 @@ A Python-based network scanner developed to learn socket programming, networking
 - Basic TCP Port Scanner
 
 ### Version 2
-- Added Service Detection
+- Service Detection
 
 ### Version 3
-- Improved Scan Output
+- Improved Output
 
 ### Version 4
-- Automatic Report Generation (`report.txt`)
+- Automatic Report Generation
 
 ### Version 5
 - Multi-threaded Port Scanner
-- Faster concurrent scanning
-- Improved overall performance
+
+### Version 6
+- Banner Grabbing
+- HTTP Banner Detection
+- Server Identification
 
 ---
 
@@ -48,34 +51,33 @@ A Python-based network scanner developed to learn socket programming, networking
 
 ```
 Python Network Scanner
------------------------------------
 
 Target : scanme.nmap.org
 
-Port 22    OPEN   SSH
 Port 80    OPEN   HTTP
 
------------------------------------
-Total open ports : 2
+Banner :
 
-Report saved to report.txt
+HTTP/1.1 200 OK
+Server: Apache/2.4.7 (Ubuntu)
+
+------------------------------
+
+Scan completed.
+
+Total open ports : 1
 ```
 
 ---
 
-## Project Structure
-
-```
-
-
 ## Future Improvements
 
-- Banner Grabbing
 - Network Host Discovery
 - CSV Export
 - JSON Export
 - HTML Report
-- Graphical User Interface (GUI)
+- GUI
+- Scan Statistics
 
 ---
 
