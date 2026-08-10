@@ -1,15 +1,11 @@
-Python Network Scanner
------------------------------------
-Target : scanme.nmap.org
+Python Network Scanner - Version 7
+========================================
+Target hostname : 127.0.0.1
+Target IP       : 127.0.0.1
+Port range      : 10-100
 
-Port 80    OPEN   HTTP
-Banner : HTTP/1.1 200 OK
-Date: Wed, 05 Aug 2026 23:24:40 GMT
-Server: Apache/2.4.7 (Ubuntu)
-Accept-Ranges: bytes
-Vary: Accept-Encoding
-Connection: close
-Content-Type: text/html
-
------------------------------------
-Total open ports : 1
+OPEN PORTS
+----------------------------------------
+----------------------------------------
+Total open ports : 0
+Scan duration    : 5.07 seconds

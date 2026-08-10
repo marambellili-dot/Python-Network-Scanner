@@ -1,9 +1,13 @@
 import socket
-import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-target = input("Enter IP address or hostname: ")
 
-services = {
+# =========================
+# Configuration
+# =========================
+
+SERVICES = {
     20: "FTP Data",
     21: "FTP",
     22: "SSH",
@@ -19,81 +23,180 @@ services = {
     443: "HTTPS"
 }
 
-open_ports = []
-threads = []
 
+# =========================
+# Scan d'un seul port
+# =========================
 
-def scan_port(port):
+def scan_port(target, port):
 
     scanner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     scanner.settimeout(1)
 
-    result = scanner.connect_ex((target, port))
+    try:
 
-    if result == 0:
+        result = scanner.connect_ex((target, port))
 
-        service = services.get(port, "Unknown")
+        if result == 0:
 
-        banner = "No Banner"
-
-        try:
-
-            if port == 80:
-                scanner.send(b"HEAD / HTTP/1.0\r\n\r\n")
-
-            data = scanner.recv(1024)
-
-            banner = data.decode(errors="ignore").strip()
-
-            if banner == "":
-                banner = "No Banner"
-
-        except:
+            service = SERVICES.get(port, "Unknown")
 
             banner = "No Banner"
 
-        print(f"Port {port:<5} OPEN   {service}")
-        print(f"Banner : {banner}\n")
+            try:
 
-        open_ports.append((port, service, banner))
+                if port == 80:
 
-    scanner.close()
+                    scanner.send(b"HEAD / HTTP/1.0\r\n\r\n")
 
+                    data = scanner.recv(1024)
+
+                    banner = data.decode(errors="ignore").strip()
+
+                    if banner == "":
+                        banner = "No Banner"
+
+            except:
+
+                banner = "No Banner"
+
+            return (port, service, banner)
+
+        return None
+
+    except socket.gaierror:
+
+        return "INVALID_HOST"
+
+    except Exception:
+
+        return None
+
+    finally:
+
+        scanner.close()
+
+
+# =========================
+# Programme principal
+# =========================
 
 print("\nPython Network Scanner")
-print("-" * 35)
-print(f"Target : {target}\n")
+print("-" * 40)
 
-for port in range(20, 101):
+target = input("Enter IP address or hostname: ")
 
-    thread = threading.Thread(target=scan_port, args=(port,))
+start_port = int(input("Start port: "))
+end_port = int(input("End port: "))
 
-    threads.append(thread)
+print("\nResolving target...")
 
-    thread.start()
+try:
 
-for thread in threads:
+    target_ip = socket.gethostbyname(target)
 
-    thread.join()
+except socket.gaierror:
+
+    print("Error: Invalid hostname or IP address.")
+    exit()
+
+
+print(f"Target hostname : {target}")
+print(f"Target IP       : {target_ip}")
+print(f"Port range      : {start_port}-{end_port}")
+print("-" * 40)
+
+start_time = time.time()
+
+open_ports = []
+
+# =========================
+# Multithreaded scanning
+# =========================
+
+with ThreadPoolExecutor(max_workers=20) as executor:
+
+    futures = {
+        executor.submit(scan_port, target_ip, port): port
+        for port in range(start_port, end_port + 1)
+    }
+
+    for future in as_completed(futures):
+
+        result = future.result()
+
+        if result == "INVALID_HOST":
+
+            print("Error: Unable to resolve target.")
+            exit()
+
+        if result is not None:
+
+            open_ports.append(result)
+
+            port, service, banner = result
+
+            print(f"Port {port:<5} OPEN   {service}")
+
+            if banner != "No Banner":
+
+                print(f"Banner : {banner}\n")
+
+
+# =========================
+# Tri des résultats
+# =========================
+
+open_ports.sort(key=lambda x: x[0])
+
+
+end_time = time.time()
+
+scan_time = end_time - start_time
+
+
+# =========================
+# Génération du rapport
+# =========================
 
 report = open("report.txt", "w")
 
-report.write("Python Network Scanner\n")
-report.write("-" * 35 + "\n")
-report.write(f"Target : {target}\n\n")
+report.write("Python Network Scanner - Version 7\n")
+report.write("=" * 40 + "\n")
 
-for port, service, banner in sorted(open_ports):
+report.write(f"Target hostname : {target}\n")
+report.write(f"Target IP       : {target_ip}\n")
+report.write(f"Port range      : {start_port}-{end_port}\n")
+report.write("\n")
+
+report.write("OPEN PORTS\n")
+report.write("-" * 40 + "\n")
+
+for port, service, banner in open_ports:
 
     report.write(f"Port {port:<5} OPEN   {service}\n")
-    report.write(f"Banner : {banner}\n\n")
 
-report.write("-" * 35 + "\n")
+    if banner != "No Banner":
+
+        report.write(f"Banner : {banner}\n")
+
+    report.write("\n")
+
+
+report.write("-" * 40 + "\n")
 report.write(f"Total open ports : {len(open_ports)}\n")
+report.write(f"Scan duration    : {scan_time:.2f} seconds\n")
 
 report.close()
 
-print("-" * 35)
+
+# =========================
+# Résultat final
+# =========================
+
+print("-" * 40)
 print("Scan completed.")
 print(f"Total open ports : {len(open_ports)}")
+print(f"Scan duration    : {scan_time:.2f} seconds")
 print("Report saved to report.txt")
