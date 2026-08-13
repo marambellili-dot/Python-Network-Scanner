@@ -1,22 +1,23 @@
 """
-Python Network Scanner — Final Version
+Python Network Security Scanner — single-file version
 ============================================================
 TCP/UDP port scanner with protocol-specific probing, banner
-grabbing, TLS handshake analysis and signature-based service
-fingerprinting (service, application, version, confidence).
+grabbing, TLS handshake analysis, signature-based service
+fingerprinting, basic host discovery and educational CVE mapping.
 
 Usage:
     python scanner.py <target> [options]
 
 Examples:
     python scanner.py 127.0.0.1
-    python scanner.py scanme.nmap.org -p 20-100
+    python scanner.py scanme.nmap.org --quick
     python scanner.py scanme.nmap.org -p 1-1000 --json
-    python scanner.py example.com -p 440-450 --udp
+    python scanner.py 192.168.1.0/24 --discover
     python scanner.py 2001:db8::1 -p 20-100
 """
 
 import argparse
+import ipaddress
 import json
 import re
 import socket
@@ -30,9 +31,10 @@ from typing import Optional
 
 VERSION = "9.0"
 
-# ==========================================
-# Probable service (port-based, avant analyse)
-# ==========================================
+
+# ============================================================
+# PROBES — tables de ports/services et requetes protocolaires
+# ============================================================
 
 PORT_SERVICES = {
     20: "FTP Data", 21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP",
@@ -41,13 +43,13 @@ PORT_SERVICES = {
     5432: "PostgreSQL", 6379: "Redis", 8080: "HTTP-Alt", 8443: "HTTPS-Alt",
 }
 
+# Ports "frequents" pour le mode --quick (equivalent simplifie du
+# top-ports de nmap)
+QUICK_PORTS = sorted(PORT_SERVICES.keys())
+
 TLS_PORTS = {443, 8443}
 
-# ==========================================
-# Probes TCP envoyees selon le port avant
-# lecture de la banniere
-# ==========================================
-
+# Probes TCP envoyees selon le port avant lecture de la banniere
 TCP_PROBES = {
     21: b"\r\n",
     22: b"\r\n",
@@ -61,11 +63,6 @@ TCP_PROBES = {
 
 # HEAD request envoyee a l'interieur du tunnel TLS pour les ports HTTPS
 HTTPS_PROBE = b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n"
-
-# ==========================================
-# Probes UDP — un service UDP ne repond que
-# si on lui envoie une requete qu'il reconnait
-# ==========================================
 
 # Requete DNS minimale (question "example.com A") — format standard,
 # utilisee uniquement pour verifier qu'un service DNS repond.
@@ -82,13 +79,15 @@ UDP_PROBES = {
     123: NTP_PROBE,
 }
 
+# Ports utilises pour le "host discovery" leger : on considere un
+# hote "up" s'il repond (ouvert OU refuse activement) sur au moins
+# un de ces ports frequents.
+DISCOVERY_PORTS = [80, 443, 22, 445, 3389]
 
-# ==========================================
-# Moteur de signatures
-# ==========================================
-#
-# Chaque signature est testee dans l'ordre ; la premiere qui
-# matche gagne.
+
+# ============================================================
+# FINGERPRINT ENGINE — detection service/application/version
+# ============================================================
 #
 # Regle de confiance (volontairement stricte) :
 #   HIGH   -> service + application + version identifies
@@ -134,8 +133,7 @@ SIGNATURES = [
     ServiceSignature(r"mysql_native_password|MariaDB", "MySQL"),
     ServiceSignature(r"-ERR unknown command|-NOAUTH", "Redis"),
 
-    # Exemple de signature ajoutee suite a un cas reel rencontre
-    # pendant les tests (voir README) : VMware Authentication Daemon
+    # Signature ajoutee suite a un cas reel rencontre pendant les tests
     ServiceSignature(
         r"VMware Authentication Daemon(?:\s+Version)?\s+([\d.]+)",
         "VMware Auth Daemon", "VMware Authentication Daemon", 1,
@@ -200,11 +198,7 @@ class FingerprintEngine:
                     if version_match:
                         version = version_match.group(1)
 
-            # Regle de confiance stricte : HIGH seulement si app + version
-            if app and version:
-                confidence = "HIGH"
-            else:
-                confidence = "MEDIUM"
+            confidence = "HIGH" if (app and version) else "MEDIUM"
 
             return FingerprintResult(
                 probable_service=probable,
@@ -215,30 +209,206 @@ class FingerprintEngine:
                 banner=banner,
             )
 
-        # Aucune signature ne correspond : c'est un resultat valide,
-        # pas une erreur. On le dit explicitement plutot que de
-        # deviner a partir du port.
+        # Aucune signature ne correspond : resultat valide, pas une erreur.
         return self._unknown(probable, banner)
 
 
-# ==========================================
-# Resolution du nom d'hote (IPv4 + IPv6)
-# ==========================================
+# ============================================================
+# VULNERABILITY LOOKUP — mapping educatif version -> CVE connues
+# ============================================================
+#
+# IMPORTANT : ceci est un lookup de reference, pas un vrai scanner
+# de vulnerabilites. Un "match" signifie seulement que cette version
+# exacte a un CVE connu dans cette petite table locale — ce n'est
+# PAS une preuve que la cible est reellement exploitable (elle peut
+# etre patchee, backportee, ou configuree differemment). Toujours
+# verifier aupres de sources faisant autorite (NVD, avis editeur).
+
+@dataclass
+class VulnerabilityMatch:
+    cve: str
+    severity: str  # Critical / High / Medium / Low
+    description: str
+
+
+VULNERABILITY_DB = {
+    "vsftpd": [
+        {
+            "version": "2.3.4",
+            "cve": "CVE-2011-2523",
+            "severity": "Critical",
+            "description": "vsftpd 2.3.4 contains a backdoor introduced "
+                            "into the source archive; widely used as a "
+                            "textbook example in security training.",
+        },
+    ],
+    "openssh": [
+        {
+            "version": "7.2",
+            "cve": "CVE-2016-6210",
+            "severity": "Medium",
+            "description": "User enumeration via timing differences "
+                            "during authentication.",
+        },
+    ],
+    "proftpd": [
+        {
+            "version": "1.3.3",
+            "cve": "CVE-2010-4221",
+            "severity": "High",
+            "description": "Stack buffer overflow in the response pool "
+                            "handling code.",
+        },
+    ],
+    "nginx": [
+        {
+            "version": "1.3.9",
+            "cve": "CVE-2013-2028",
+            "severity": "Critical",
+            "description": "Stack buffer overflow in chunked transfer "
+                            "encoding handling.",
+        },
+    ],
+}
+
+
+def check_vulnerabilities(application, version):
+    """Retourne une liste de VulnerabilityMatch pour (application, version)."""
+    if not application or not version:
+        return []
+
+    entries = VULNERABILITY_DB.get(application.lower(), [])
+    return [
+        VulnerabilityMatch(cve=e["cve"], severity=e["severity"], description=e["description"])
+        for e in entries
+        if e["version"] == version
+    ]
+
+
+def summarize_risk(all_matches):
+    """all_matches : liste de listes de VulnerabilityMatch -> comptage par severite."""
+    summary = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    for matches in all_matches:
+        for m in matches:
+            if m.severity in summary:
+                summary[m.severity] += 1
+    return summary
+
+
+# ============================================================
+# REPORTS — construction des metadonnees et export TXT / JSON
+# ============================================================
+
+def build_metadata(target, target_ip, start_port, end_port, results,
+                    duration, protocols, risk_summary):
+    return {
+        "target": target,
+        "resolved_ip": target_ip,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "port_range": f"{start_port}-{end_port}",
+        "protocols_scanned": protocols,
+        "scan_duration_seconds": round(duration, 2),
+        "ports_scanned": (end_port - start_port + 1) * len(protocols),
+        "open_ports": len(results),
+        "risk_summary": risk_summary,
+    }
+
+
+def generate_txt_report(path, metadata, results):
+    with open(path, "w", encoding="utf-8") as report:
+        report.write(f"Python Network Scanner v{VERSION} — Fingerprinting Engine\n")
+        report.write("=" * 60 + "\n")
+        for key, value in metadata.items():
+            report.write(f"{key:<20}: {value}\n")
+        report.write("=" * 60 + "\n\n")
+
+        for r in results:
+            report.write(f"Port {r['port']:<5}/{r['protocol']:<3} {r['state']:<14}\n")
+            report.write(f"Probable service : {r['probable_service']}\n")
+            report.write(f"Detected service : {r['detected_service']}\n")
+            report.write(f"Application      : {r['application'] or '-'}\n")
+            report.write(f"Version          : {r['version'] or '-'}\n")
+            report.write(f"Confidence       : {r['confidence']}\n")
+            report.write(f"Banner           : {r['banner']}\n")
+
+            vulns = r.get("vulnerabilities") or []
+            if vulns:
+                report.write("Known CVEs       :\n")
+                for v in vulns:
+                    report.write(f"   - {v['cve']} ({v['severity']}) — {v['description']}\n")
+            else:
+                report.write("Known CVEs       : none found in local reference table\n")
+
+            report.write("-" * 60 + "\n")
+
+        report.write(f"\nTotal open ports : {len(results)}\n")
+        report.write(
+            "\nNote: the CVE list above is a small educational reference "
+            "table, not a real vulnerability scan result. A match does "
+            "not confirm the target is actually exploitable.\n"
+        )
+
+
+def generate_json_report(path, metadata, results):
+    payload = {"scan_metadata": metadata, "results": results}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+# ============================================================
+# RESOLUTION DE CIBLE (IPv4 + IPv6)
+# ============================================================
 
 def resolve_target(target: str):
     """Retourne (ip, socket_family) ou (None, None) si echec."""
     try:
         infos = socket.getaddrinfo(target, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        ip = infos[0][4][0]
-        family = infos[0][0]
-        return ip, family
+        return infos[0][4][0], infos[0][0]
     except socket.gaierror:
         return None, None
 
 
-# ==========================================
-# Banniere TCP simple
-# ==========================================
+# ============================================================
+# HOST DISCOVERY (leger, sans ICMP/raw socket)
+# ============================================================
+#
+# On considere un hote "up" s'il repond (ouvert OU refuse activement,
+# ce qui prouve qu'une machine ecoute la pile TCP) sur au moins un
+# port frequent. Un vrai "ping sweep" ICMP demanderait des privileges
+# administrateur, donc cette approche reste volontairement simple.
+
+def is_host_up(ip: str, timeout: float) -> bool:
+    for port in DISCOVERY_PORTS:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        try:
+            if sock.connect_ex((ip, port)) == 0:
+                return True
+        except OSError:
+            pass
+        finally:
+            sock.close()
+    return False
+
+
+def discover_hosts(network_str: str, timeout: float, threads: int):
+    network = ipaddress.ip_network(network_str, strict=False)
+    hosts = [str(ip) for ip in network.hosts()]
+
+    up_hosts = []
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = {executor.submit(is_host_up, ip, timeout): ip for ip in hosts}
+        for future in as_completed(futures):
+            ip = futures[future]
+            if future.result():
+                up_hosts.append(ip)
+
+    return sorted(up_hosts, key=lambda ip: ipaddress.ip_address(ip))
+
+
+# ============================================================
+# BANNIERE TCP SIMPLE
+# ============================================================
 
 def grab_tcp_banner(scanner: socket.socket, port: int) -> str:
     try:
@@ -254,15 +424,11 @@ def grab_tcp_banner(scanner: socket.socket, port: int) -> str:
         return "No Banner"
 
 
-# ==========================================
-# Handshake TLS (443 / 8443) — nmap detecte
-# la couche SSL puis continue l'identification
-# derriere cette couche ; on fait la version
-# simplifiee ici.
-# ==========================================
+# ============================================================
+# HANDSHAKE TLS (443 / 8443)
+# ============================================================
 
 def grab_tls_banner(target: str, port: int, family: int, timeout: float):
-    """Retourne (banner, tls_info) ou (None, None) si le handshake echoue."""
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
@@ -285,43 +451,46 @@ def grab_tls_banner(target: str, port: int, family: int, timeout: float):
 
                 tls_info = f"{tls_version} ({cipher})" if tls_version else None
                 return banner, tls_info
-
     except Exception:
         return None, None
 
 
-# ==========================================
-# Scan d'un port TCP + fingerprinting
-# ==========================================
+# ============================================================
+# SCAN TCP / UDP + fingerprinting + CVE lookup
+# ============================================================
 
-def scan_tcp_port(target: str, port: int, family: int, timeout: float,
-                   engine: FingerprintEngine) -> Optional[dict]:
+def _attach_vulnerabilities(result: dict) -> dict:
+    matches = check_vulnerabilities(result["application"], result["version"])
+    result["vulnerabilities"] = [asdict(m) for m in matches]
+    return result
 
+
+def scan_tcp_port(target, port, family, timeout, engine):
     if port in TLS_PORTS:
         banner, tls_info = grab_tls_banner(target, port, family, timeout)
         if banner is None:
-            return None  # handshake TLS impossible -> port considere ferme/filtre
+            return None
 
         fingerprint = engine.analyze(banner, port)
-        # Le handshake TLS reussi est en soi une confirmation forte du protocole
         if fingerprint.detected_service == "Unknown":
             fingerprint.detected_service = "HTTPS"
             fingerprint.confidence = "MEDIUM"
         if tls_info:
             fingerprint.banner = f"[TLS: {tls_info}] {fingerprint.banner}"
 
-        return {"port": port, "protocol": "tcp", "state": "OPEN", **asdict(fingerprint)}
+        result = {"port": port, "protocol": "tcp", "state": "OPEN", **asdict(fingerprint)}
+        return _attach_vulnerabilities(result)
 
     scanner = socket.socket(family, socket.SOCK_STREAM)
     scanner.settimeout(timeout)
     try:
-        result = scanner.connect_ex((target, port))
-        if result != 0:
+        if scanner.connect_ex((target, port)) != 0:
             return None
 
         banner = grab_tcp_banner(scanner, port)
         fingerprint = engine.analyze(banner, port)
-        return {"port": port, "protocol": "tcp", "state": "OPEN", **asdict(fingerprint)}
+        result = {"port": port, "protocol": "tcp", "state": "OPEN", **asdict(fingerprint)}
+        return _attach_vulnerabilities(result)
 
     except OSError:
         return None
@@ -329,19 +498,7 @@ def scan_tcp_port(target: str, port: int, family: int, timeout: float,
         scanner.close()
 
 
-# ==========================================
-# Scan d'un port UDP
-# ==========================================
-#
-# UDP n'a pas de handshake : on envoie une requete adaptee au
-# service attendu et on attend une reponse.
-#   - une reponse arrive          -> OPEN
-#   - le port est explicitement fermé (ICMP unreachable) -> ferme
-#   - rien ne repond dans le delai -> OPEN|FILTERED (ambigu, comme nmap :
-#     un service peut tres bien ignorer les paquets qu'il ne comprend pas)
-
-def scan_udp_port(target: str, port: int, family: int, timeout: float,
-                   engine: FingerprintEngine) -> Optional[dict]:
+def scan_udp_port(target, port, family, timeout, engine):
     probe = UDP_PROBES.get(port, b"\x00")
     sock = socket.socket(family, socket.SOCK_DGRAM)
     sock.settimeout(timeout)
@@ -355,10 +512,11 @@ def scan_udp_port(target: str, port: int, family: int, timeout: float,
             banner = "No Banner"
             state = "OPEN|FILTERED"
         except ConnectionResetError:
-            return None  # ICMP port unreachable -> ferme
+            return None
 
         fingerprint = engine.analyze(banner, port)
-        return {"port": port, "protocol": "udp", "state": state, **asdict(fingerprint)}
+        result = {"port": port, "protocol": "udp", "state": state, **asdict(fingerprint)}
+        return _attach_vulnerabilities(result)
 
     except OSError:
         return None
@@ -366,61 +524,25 @@ def scan_udp_port(target: str, port: int, family: int, timeout: float,
         sock.close()
 
 
-# ==========================================
-# Rapports
-# ==========================================
-
-def build_metadata(target, target_ip, start_port, end_port, results, duration, protocols):
-    return {
-        "target": target,
-        "resolved_ip": target_ip,
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "port_range": f"{start_port}-{end_port}",
-        "protocols_scanned": protocols,
-        "scan_duration_seconds": round(duration, 2),
-        "ports_scanned": (end_port - start_port + 1) * len(protocols),
-        "open_ports": len(results),
-    }
-
-
-def generate_txt_report(path, metadata, results):
-    with open(path, "w", encoding="utf-8") as report:
-        report.write(f"Python Network Scanner v{VERSION} — Fingerprinting Engine\n")
-        report.write("=" * 60 + "\n")
-        for key, value in metadata.items():
-            report.write(f"{key:<20}: {value}\n")
-        report.write("=" * 60 + "\n\n")
-
-        for r in results:
-            report.write(f"Port {r['port']:<5}/{r['protocol']:<3} {r['state']:<14}\n")
-            report.write(f"Probable service : {r['probable_service']}\n")
-            report.write(f"Detected service : {r['detected_service']}\n")
-            report.write(f"Application      : {r['application'] or '-'}\n")
-            report.write(f"Version          : {r['version'] or '-'}\n")
-            report.write(f"Confidence       : {r['confidence']}\n")
-            report.write(f"Banner           : {r['banner']}\n")
-            report.write("-" * 60 + "\n")
-
-        report.write(f"\nTotal open ports : {len(results)}\n")
-
-
-def generate_json_report(path, metadata, results):
-    payload = {"scan_metadata": metadata, "results": results}
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-
-
-# ==========================================
+# ============================================================
 # CLI
-# ==========================================
+# ============================================================
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Python Network Scanner — TCP/UDP scanning with service fingerprinting"
+        description="Python Network Security Scanner — TCP/UDP scanning, "
+                     "fingerprinting, host discovery and CVE reference lookup"
     )
-    parser.add_argument("target", help="IP address (v4/v6) or hostname to scan")
+    parser.add_argument("target", help="IP/hostname (v4/v6), or a CIDR range with --discover")
     parser.add_argument("-p", "--ports", default="1-1024",
                          help="Port range, e.g. 20-100 (default: 1-1024)")
+    parser.add_argument("--quick", action="store_true",
+                         help="Scan only common ports instead of a range")
+    parser.add_argument("--full", action="store_true",
+                         help="Scan all 65535 ports (overrides -p)")
+    parser.add_argument("--discover", action="store_true",
+                         help="Treat target as a CIDR range and discover live hosts "
+                              "instead of scanning ports")
     parser.add_argument("-t", "--threads", type=int, default=50,
                          help="Number of worker threads (default: 50)")
     parser.add_argument("--timeout", type=float, default=0.7,
@@ -438,25 +560,59 @@ def parse_args():
 
     args = parser.parse_args()
 
-    try:
-        start_port, end_port = args.ports.split("-")
-        start_port, end_port = int(start_port), int(end_port)
-    except ValueError:
-        parser.error("--ports must be formatted as START-END, e.g. 20-100")
+    if args.discover:
+        return args, None, None
 
-    if start_port < 1 or end_port > 65535 or start_port > end_port:
-        parser.error("Invalid port range")
+    if args.full:
+        start_port, end_port = 1, 65535
+    elif args.quick:
+        start_port, end_port = None, None  # gere via QUICK_PORTS
+    else:
+        try:
+            start_port, end_port = args.ports.split("-")
+            start_port, end_port = int(start_port), int(end_port)
+        except ValueError:
+            parser.error("--ports must be formatted as START-END, e.g. 20-100")
+
+        if start_port < 1 or end_port > 65535 or start_port > end_port:
+            parser.error("Invalid port range")
 
     return args, start_port, end_port
 
 
-# ==========================================
-# Main
-# ==========================================
+# ============================================================
+# MAIN
+# ============================================================
 
-def main():
-    args, start_port, end_port = parse_args()
+def run_discovery(args):
+    print(f"\nPython Network Scanner v{VERSION} — Host Discovery")
+    print("=" * 60)
+    print(f"Network     : {args.target}")
+    print(f"Threads     : {args.threads}")
+    print("=" * 60)
 
+    start_time = time.perf_counter()
+    try:
+        hosts = discover_hosts(args.target, args.timeout, args.threads)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    duration = time.perf_counter() - start_time
+
+    print(f"\n{len(hosts)} host(s) up:")
+    for ip in hosts:
+        print(f"  {ip}")
+
+    print("\n" + "=" * 60)
+    print(f"Discovery duration : {duration:.2f} seconds")
+    print(
+        "\nNote: discovery is based on common-port TCP responses, not "
+        "ICMP echo — a host with every probed port firewalled may be "
+        "missed."
+    )
+
+
+def run_port_scan(args, start_port, end_port):
     print(f"\nPython Network Scanner v{VERSION} — Fingerprinting Engine")
     print("=" * 60)
 
@@ -468,9 +624,17 @@ def main():
     ip_kind = "IPv6" if family == socket.AF_INET6 else "IPv4"
     protocols = ["tcp", "udp"] if args.udp else ["tcp"]
 
+    if args.quick:
+        ports_to_scan = QUICK_PORTS
+        range_label = f"{len(QUICK_PORTS)} common ports"
+        start_port, end_port = min(QUICK_PORTS), max(QUICK_PORTS)
+    else:
+        ports_to_scan = list(range(start_port, end_port + 1))
+        range_label = f"{start_port}-{end_port}"
+
     print(f"Target      : {args.target}")
     print(f"Resolved IP : {target_ip} ({ip_kind})")
-    print(f"Port range  : {start_port}-{end_port}")
+    print(f"Port range  : {range_label}")
     print(f"Protocols   : {', '.join(protocols)}")
     print(f"Threads     : {args.threads}")
     print(f"Timeout     : {args.timeout}s")
@@ -482,16 +646,10 @@ def main():
 
     with ThreadPoolExecutor(max_workers=args.threads) as executor:
         futures = {}
-
-        for port in range(start_port, end_port + 1):
-            futures[executor.submit(
-                scan_tcp_port, target_ip, port, family, args.timeout, engine
-            )] = port
-
+        for port in ports_to_scan:
+            futures[executor.submit(scan_tcp_port, target_ip, port, family, args.timeout, engine)] = port
             if args.udp:
-                futures[executor.submit(
-                    scan_udp_port, target_ip, port, family, args.timeout, engine
-                )] = port
+                futures[executor.submit(scan_udp_port, target_ip, port, family, args.timeout, engine)] = port
 
         for future in as_completed(futures):
             result = future.result()
@@ -504,12 +662,16 @@ def main():
                     print(f"Version          : {result['version'] or '-'}")
                     print(f"Confidence       : {result['confidence']}")
                     print(f"Banner           : {result['banner'][:150]}")
+                    if result["vulnerabilities"]:
+                        for v in result["vulnerabilities"]:
+                            print(f"  ! {v['cve']} ({v['severity']}) — {v['description']}")
 
     results.sort(key=lambda item: (item["port"], item["protocol"]))
     duration = time.perf_counter() - start_time
 
+    risk_summary = summarize_risk([r["vulnerabilities"] for r in results])
     metadata = build_metadata(args.target, target_ip, start_port, end_port,
-                               results, duration, protocols)
+                               results, duration, protocols, risk_summary)
 
     txt_path = f"{args.output}.txt"
     generate_txt_report(txt_path, metadata, results)
@@ -522,9 +684,19 @@ def main():
     print("Scan completed.")
     print(f"Total open ports : {len(results)}")
     print(f"Scan duration    : {duration:.2f} seconds")
+    print(f"Risk summary     : {risk_summary}")
     print(f"Report saved to  : {txt_path}")
     if args.json:
         print(f"JSON report saved to : {args.output}.json")
+
+
+def main():
+    args, start_port, end_port = parse_args()
+
+    if args.discover:
+        run_discovery(args)
+    else:
+        run_port_scan(args, start_port, end_port)
 
 
 if __name__ == "__main__":
