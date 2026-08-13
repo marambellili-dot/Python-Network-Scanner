@@ -1,86 +1,51 @@
 # Python Network Scanner
 
-A Python-based network scanner developed to learn socket programming, networking, concurrent programming, and network service identification.
-
----
+A Python-based TCP network scanner developed to explore
+network reconnaissance, socket programming, service detection,
+banner grabbing and basic service fingerprinting.
 
 ## Features
 
-- TCP Port Scanning
-- Service Detection
-- Multi-threaded Scanning
-- Banner Grabbing
-- Automatic Report Generation
-
----
+- TCP port scanning
+- Hostname and IPv4 resolution
+- Configurable port range
+- Multithreaded scanning
+- Common service identification
+- Banner grabbing
+- Protocol-specific probes
+- Basic service fingerprinting
+- Scan duration measurement
+- Automatic TXT report generation
 
 ## Technologies
 
 - Python
-- Socket Programming
-- Threading
-- Networking
-
----
+- Socket programming
+- TCP/IP
+- ThreadPoolExecutor
+- Network reconnaissance
 
 ## Project Evolution
 
-### Version 1
-- Basic TCP Port Scanner
+- V1 — Basic TCP Port Scanner
+- V2 — Service Identification
+- V3 — Improved Output
+- V4 — Report Generation
+- V5 — Banner Grabbing
+- V6 — Multithreaded Scanning
+- V7 — Scanner Architecture Improvements
+- V8 — Multi-Protocol Banner Probing
+- V9 — Service Fingerprinting Engine
 
-### Version 2
-- Service Detection
+## Security Concepts
 
-### Version 3
-- Improved Output
+This project demonstrates:
 
-### Version 4
-- Automatic Report Generation
-
-### Version 5
-- Multi-threaded Port Scanner
-
-### Version 6
-- Banner Grabbing
-- HTTP Banner Detection
-- Server Identification
-
----
-
-## Example Output
-
-```
-Python Network Scanner
-
-Target : scanme.nmap.org
-
-Port 80    OPEN   HTTP
-
-Banner :
-
-HTTP/1.1 200 OK
-Server: Apache/2.4.7 (Ubuntu)
-
-------------------------------
-
-Scan completed.
-
-Total open ports : 1
-```
-
----
-
-## Future Improvements
-
-- Network Host Discovery
-- CSV Export
-- JSON Export
-- HTML Report
-- GUI
-- Scan Statistics
-
----
-
-## Author
-
-Maram Bellili
+- TCP connections
+- Port states
+- Network services
+- Service enumeration
+- Banner grabbing
+- Protocol-specific communication
+- Basic service fingerprinting
+- Network reconnaissance

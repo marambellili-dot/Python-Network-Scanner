@@ -1,11 +1,42 @@
-Python Network Scanner - Version 7
-========================================
-Target hostname : 127.0.0.1
-Target IP       : 127.0.0.1
-Port range      : 10-100
+Python Network Scanner V9 — Fingerprinting Engine
+============================================================
+Target       : 127.0.0.1
+Resolved IP  : 127.0.0.1
+Port range   : 20-5000
+Scan time    : 70.97 seconds
+============================================================
 
-OPEN PORTS
-----------------------------------------
-----------------------------------------
-Total open ports : 0
-Scan duration    : 5.07 seconds
+Port 135   OPEN  
+Probable service : Unknown
+Detected service : Unknown
+Application      : -
+Version          : -
+Confidence       : LOW
+Banner           : No Banner
+------------------------------------------------------------
+Port 445   OPEN  
+Probable service : Unknown
+Detected service : Unknown
+Application      : -
+Version          : -
+Confidence       : LOW
+Banner           : No Banner
+------------------------------------------------------------
+Port 902   OPEN  
+Probable service : Unknown
+Detected service : Unknown
+Application      : -
+Version          : -
+Confidence       : LOW
+Banner           : 220 VMware Authentication Daemon Version 1.10: SSL Required, ServerDaemonProtocol:SOAP, MKSDisplayProtocol:VNC , , NFCSSL supported/t,
+------------------------------------------------------------
+Port 912   OPEN  
+Probable service : Unknown
+Detected service : Unknown
+Application      : -
+Version          : -
+Confidence       : LOW
+Banner           : 220 VMware Authentication Daemon Version 1.0, ServerDaemonProtocol:SOAP, MKSDisplayProtocol:VNC , , ,
+------------------------------------------------------------
+
+Total open ports : 4

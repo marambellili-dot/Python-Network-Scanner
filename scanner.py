@@ -1,60 +1,54 @@
 """
-Python Network Scanner V9 — Service Fingerprinting Engine
+Python Network Scanner — Final Version
 ============================================================
-Passe d'une simple correspondance port -> service a une vraie
-detection basee sur des signatures (probe + regex + confidence),
-inspiree du fonctionnement de `nmap-service-probes`.
+TCP/UDP port scanner with protocol-specific probing, banner
+grabbing, TLS handshake analysis and signature-based service
+fingerprinting (service, application, version, confidence).
 
 Usage:
-    python scanner_v9.py <target> [options]
+    python scanner.py <target> [options]
 
-Exemples:
-    python scanner_v9.py 127.0.0.1
-    python scanner_v9.py scanme.nmap.org -p 20-100
-    python scanner_v9.py scanme.nmap.org -p 1-1000 --json -o result.json
-    python scanner_v9.py 192.168.1.1 -p 1-65535 -t 200 --timeout 1.5
+Examples:
+    python scanner.py 127.0.0.1
+    python scanner.py scanme.nmap.org -p 20-100
+    python scanner.py scanme.nmap.org -p 1-1000 --json
+    python scanner.py example.com -p 440-450 --udp
+    python scanner.py 2001:db8::1 -p 20-100
 """
 
 import argparse
 import json
 import re
 import socket
+import ssl
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
+from datetime import datetime
 from typing import Optional
 
+VERSION = "9.0"
 
 # ==========================================
 # Probable service (port-based, avant analyse)
 # ==========================================
 
 PORT_SERVICES = {
-    20: "FTP Data",
-    21: "FTP",
-    22: "SSH",
-    23: "Telnet",
-    25: "SMTP",
-    53: "DNS",
-    80: "HTTP",
-    110: "POP3",
-    143: "IMAP",
-    443: "HTTPS",
-    3306: "MySQL",
-    3389: "RDP",
-    5432: "PostgreSQL",
-    6379: "Redis",
-    8080: "HTTP-Alt",
+    20: "FTP Data", 21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP",
+    53: "DNS", 80: "HTTP", 110: "POP3", 123: "NTP", 143: "IMAP",
+    161: "SNMP", 443: "HTTPS", 3306: "MySQL", 3389: "RDP",
+    5432: "PostgreSQL", 6379: "Redis", 8080: "HTTP-Alt", 8443: "HTTPS-Alt",
 }
 
+TLS_PORTS = {443, 8443}
 
 # ==========================================
-# Probes envoyees selon le port avant lecture
-# de la banniere
+# Probes TCP envoyees selon le port avant
+# lecture de la banniere
 # ==========================================
 
-PROBES = {
+TCP_PROBES = {
     21: b"\r\n",
     22: b"\r\n",
     23: b"\r\n",
@@ -65,16 +59,42 @@ PROBES = {
     8080: b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n",
 }
 
+# HEAD request envoyee a l'interieur du tunnel TLS pour les ports HTTPS
+HTTPS_PROBE = b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n"
+
+# ==========================================
+# Probes UDP — un service UDP ne repond que
+# si on lui envoie une requete qu'il reconnait
+# ==========================================
+
+# Requete DNS minimale (question "example.com A") — format standard,
+# utilisee uniquement pour verifier qu'un service DNS repond.
+DNS_PROBE = bytes.fromhex(
+    "0001" "0100" "0001" "0000" "0000" "0000"
+    "076578616d706c6503636f6d00" "0001" "0001"
+)
+
+# Requete client NTP standard (paquet de 48 octets, premier octet 0x1B)
+NTP_PROBE = b"\x1b" + b"\x00" * 47
+
+UDP_PROBES = {
+    53: DNS_PROBE,
+    123: NTP_PROBE,
+}
+
 
 # ==========================================
 # Moteur de signatures
 # ==========================================
 #
-# Chaque signature est testee dans l'ordre. La premiere qui
-# matche gagne. `version_group` pointe vers le groupe regex
-# contenant le numero de version, si disponible -> confidence HIGH.
-# Sans groupe de version mais match certain -> MEDIUM.
-# Aucun match, uniquement le port -> LOW (fallback).
+# Chaque signature est testee dans l'ordre ; la premiere qui
+# matche gagne.
+#
+# Regle de confiance (volontairement stricte) :
+#   HIGH   -> service + application + version identifies
+#   MEDIUM -> service identifie, mais application et/ou version manquants
+#   LOW    -> aucune signature ne correspond, seule la supposition
+#             basee sur le port est disponible
 
 @dataclass
 class ServiceSignature:
@@ -89,95 +109,39 @@ class ServiceSignature:
 
 
 SIGNATURES = [
-    # --- SSH ---
-    ServiceSignature(
-        pattern=r"^SSH-[\d.]+-OpenSSH[_-]([\w.]+)",
-        service="SSH", app="OpenSSH", version_group=1,
-    ),
-    ServiceSignature(
-        pattern=r"^SSH-([\d.]+)",
-        service="SSH", app=None, version_group=None,
-    ),
+    ServiceSignature(r"^SSH-[\d.]+-OpenSSH[_-]([\w.]+)", "SSH", "OpenSSH", 1),
+    ServiceSignature(r"^SSH-([\d.]+)", "SSH"),
 
-    # --- FTP ---
-    ServiceSignature(
-        pattern=r"220.*vsFTPd\s+([\d.]+)",
-        service="FTP", app="vsFTPd", version_group=1,
-    ),
-    ServiceSignature(
-        pattern=r"220.*ProFTPD\s+([\d.]+)",
-        service="FTP", app="ProFTPD", version_group=1,
-    ),
-    ServiceSignature(
-        pattern=r"220.*FileZilla",
-        service="FTP", app="FileZilla Server",
-    ),
-    ServiceSignature(
-        pattern=r"^220[\s\-].*FTP",
-        service="FTP", app=None,
-    ),
+    ServiceSignature(r"220.*vsFTPd\s+([\d.]+)", "FTP", "vsFTPd", 1),
+    ServiceSignature(r"220.*ProFTPD\s+([\d.]+)", "FTP", "ProFTPD", 1),
+    ServiceSignature(r"220.*FileZilla", "FTP", "FileZilla Server"),
+    ServiceSignature(r"^220[\s\-].*FTP", "FTP"),
 
-    # --- SMTP ---
-    ServiceSignature(
-        pattern=r"220.*Postfix",
-        service="SMTP", app="Postfix",
-    ),
-    ServiceSignature(
-        pattern=r"220.*Exim\s+([\d.]+)",
-        service="SMTP", app="Exim", version_group=1,
-    ),
-    ServiceSignature(
-        pattern=r"^220[\s\-].*(ESMTP|SMTP)",
-        service="SMTP", app=None,
-    ),
+    ServiceSignature(r"220.*Postfix", "SMTP", "Postfix"),
+    ServiceSignature(r"220.*Exim\s+([\d.]+)", "SMTP", "Exim", 1),
+    ServiceSignature(r"^220[\s\-].*(ESMTP|SMTP)", "SMTP"),
 
-    # --- HTTP ---
-    ServiceSignature(
-        pattern=r"^HTTP/1\.[01]\s+\d{3}",
-        service="HTTP", app=None,
-    ),
+    ServiceSignature(r"^HTTP/1\.[01]\s+\d{3}", "HTTP"),
 
-    # --- POP3 ---
-    ServiceSignature(
-        pattern=r"^\+OK.*Dovecot",
-        service="POP3", app="Dovecot",
-    ),
-    ServiceSignature(
-        pattern=r"^\+OK",
-        service="POP3", app=None,
-    ),
+    ServiceSignature(r"^\+OK.*Dovecot", "POP3", "Dovecot"),
+    ServiceSignature(r"^\+OK", "POP3"),
 
-    # --- IMAP ---
-    ServiceSignature(
-        pattern=r"^\*\s+OK.*Dovecot",
-        service="IMAP", app="Dovecot",
-    ),
-    ServiceSignature(
-        pattern=r"^\*\s+OK",
-        service="IMAP", app=None,
-    ),
+    ServiceSignature(r"^\*\s+OK.*Dovecot", "IMAP", "Dovecot"),
+    ServiceSignature(r"^\*\s+OK", "IMAP"),
 
-    # --- Telnet ---
-    ServiceSignature(
-        pattern=r"login:|username:",
-        service="Telnet", app=None,
-    ),
+    ServiceSignature(r"login:|username:", "Telnet"),
 
-    # --- MySQL (banniere binaire, on cherche juste le marqueur) ---
-    ServiceSignature(
-        pattern=r"mysql_native_password|MariaDB",
-        service="MySQL", app=None,
-    ),
+    ServiceSignature(r"mysql_native_password|MariaDB", "MySQL"),
+    ServiceSignature(r"-ERR unknown command|-NOAUTH", "Redis"),
 
-    # --- Redis ---
+    # Exemple de signature ajoutee suite a un cas reel rencontre
+    # pendant les tests (voir README) : VMware Authentication Daemon
     ServiceSignature(
-        pattern=r"-ERR unknown command|-NOAUTH",
-        service="Redis", app=None,
+        r"VMware Authentication Daemon(?:\s+Version)?\s+([\d.]+)",
+        "VMware Auth Daemon", "VMware Authentication Daemon", 1,
     ),
 ]
 
-# Extraction du header "Server:" pour les reponses HTTP,
-# independamment de la signature principale.
 HTTP_SERVER_RE = re.compile(r"Server:\s*([^\r\n]+)", re.IGNORECASE)
 
 
@@ -197,18 +161,21 @@ class FingerprintEngine:
     def __init__(self, signatures=None):
         self.signatures = signatures or SIGNATURES
 
+    def _unknown(self, probable, banner):
+        return FingerprintResult(
+            probable_service=probable,
+            detected_service="Unknown",
+            application=None,
+            version=None,
+            confidence="LOW",
+            banner=banner,
+        )
+
     def analyze(self, banner: str, port: int) -> FingerprintResult:
         probable = PORT_SERVICES.get(port, "Unknown")
 
         if not banner or banner == "No Banner":
-            return FingerprintResult(
-                probable_service=probable,
-                detected_service=probable,
-                application=None,
-                version=None,
-                confidence="LOW",
-                banner="No Banner",
-            )
+            return self._unknown(probable, "No Banner")
 
         for sig in self.signatures:
             match = sig.compiled.search(banner)
@@ -216,18 +183,14 @@ class FingerprintEngine:
                 continue
 
             version = None
-            confidence = "MEDIUM"
-
             if sig.version_group:
                 try:
                     version = match.group(sig.version_group)
-                    confidence = "HIGH"
                 except IndexError:
                     version = None
 
             app = sig.app
 
-            # Cas particulier HTTP : on essaie d'extraire le header Server
             if sig.service == "HTTP":
                 server_match = HTTP_SERVER_RE.search(banner)
                 if server_match:
@@ -236,9 +199,12 @@ class FingerprintEngine:
                     version_match = re.search(r"/([\d.]+)", server_value)
                     if version_match:
                         version = version_match.group(1)
-                        confidence = "HIGH"
-                    else:
-                        confidence = "MEDIUM"
+
+            # Regle de confiance stricte : HIGH seulement si app + version
+            if app and version:
+                confidence = "HIGH"
+            else:
+                confidence = "MEDIUM"
 
             return FingerprintResult(
                 probable_service=probable,
@@ -249,101 +215,184 @@ class FingerprintEngine:
                 banner=banner,
             )
 
-        # Aucune signature ne matche : on retombe sur le port,
-        # mais on garde la banniere brute car elle a de la valeur
-        # meme non identifiee.
-        return FingerprintResult(
-            probable_service=probable,
-            detected_service=probable,
-            application=None,
-            version=None,
-            confidence="LOW",
-            banner=banner,
-        )
+        # Aucune signature ne correspond : c'est un resultat valide,
+        # pas une erreur. On le dit explicitement plutot que de
+        # deviner a partir du port.
+        return self._unknown(probable, banner)
 
 
 # ==========================================
-# Lecture de la banniere sur un port ouvert
+# Resolution du nom d'hote (IPv4 + IPv6)
 # ==========================================
 
-def grab_banner(scanner: socket.socket, port: int) -> str:
+def resolve_target(target: str):
+    """Retourne (ip, socket_family) ou (None, None) si echec."""
+    try:
+        infos = socket.getaddrinfo(target, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        ip = infos[0][4][0]
+        family = infos[0][0]
+        return ip, family
+    except socket.gaierror:
+        return None, None
+
+
+# ==========================================
+# Banniere TCP simple
+# ==========================================
+
+def grab_tcp_banner(scanner: socket.socket, port: int) -> str:
     try:
         scanner.settimeout(2)
-
-        if port in PROBES:
-            scanner.sendall(PROBES[port])
-
+        if port in TCP_PROBES:
+            scanner.sendall(TCP_PROBES[port])
         data = scanner.recv(2048)
-
         if not data:
             return "No Banner"
-
         banner = data.decode(errors="ignore").strip()
         return banner if banner else "No Banner"
-
     except Exception:
         return "No Banner"
+
+
+# ==========================================
+# Handshake TLS (443 / 8443) — nmap detecte
+# la couche SSL puis continue l'identification
+# derriere cette couche ; on fait la version
+# simplifiee ici.
+# ==========================================
+
+def grab_tls_banner(target: str, port: int, family: int, timeout: float):
+    """Retourne (banner, tls_info) ou (None, None) si le handshake echoue."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as raw_sock:
+            raw_sock.settimeout(timeout)
+            raw_sock.connect((target, port))
+            with context.wrap_socket(raw_sock) as tls_sock:
+                tls_version = tls_sock.version()
+                cipher = tls_sock.cipher()[0] if tls_sock.cipher() else None
+
+                tls_sock.settimeout(2)
+                try:
+                    tls_sock.sendall(HTTPS_PROBE)
+                    data = tls_sock.recv(2048)
+                    banner = data.decode(errors="ignore").strip() or "No Banner"
+                except Exception:
+                    banner = "No Banner"
+
+                tls_info = f"{tls_version} ({cipher})" if tls_version else None
+                return banner, tls_info
+
+    except Exception:
+        return None, None
 
 
 # ==========================================
 # Scan d'un port TCP + fingerprinting
 # ==========================================
 
-def scan_port(target: str, port: int, timeout: float,
-              engine: FingerprintEngine) -> Optional[dict]:
-    scanner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    scanner.settimeout(timeout)
+def scan_tcp_port(target: str, port: int, family: int, timeout: float,
+                   engine: FingerprintEngine) -> Optional[dict]:
 
+    if port in TLS_PORTS:
+        banner, tls_info = grab_tls_banner(target, port, family, timeout)
+        if banner is None:
+            return None  # handshake TLS impossible -> port considere ferme/filtre
+
+        fingerprint = engine.analyze(banner, port)
+        # Le handshake TLS reussi est en soi une confirmation forte du protocole
+        if fingerprint.detected_service == "Unknown":
+            fingerprint.detected_service = "HTTPS"
+            fingerprint.confidence = "MEDIUM"
+        if tls_info:
+            fingerprint.banner = f"[TLS: {tls_info}] {fingerprint.banner}"
+
+        return {"port": port, "protocol": "tcp", "state": "OPEN", **asdict(fingerprint)}
+
+    scanner = socket.socket(family, socket.SOCK_STREAM)
+    scanner.settimeout(timeout)
     try:
         result = scanner.connect_ex((target, port))
-
         if result != 0:
             return None
 
-        banner = grab_banner(scanner, port)
+        banner = grab_tcp_banner(scanner, port)
         fingerprint = engine.analyze(banner, port)
-
-        return {
-            "port": port,
-            "state": "OPEN",
-            **asdict(fingerprint),
-        }
+        return {"port": port, "protocol": "tcp", "state": "OPEN", **asdict(fingerprint)}
 
     except OSError:
         return None
-
     finally:
         scanner.close()
 
 
 # ==========================================
-# Resolution du nom d'hote
+# Scan d'un port UDP
 # ==========================================
+#
+# UDP n'a pas de handshake : on envoie une requete adaptee au
+# service attendu et on attend une reponse.
+#   - une reponse arrive          -> OPEN
+#   - le port est explicitement fermé (ICMP unreachable) -> ferme
+#   - rien ne repond dans le delai -> OPEN|FILTERED (ambigu, comme nmap :
+#     un service peut tres bien ignorer les paquets qu'il ne comprend pas)
 
-def resolve_target(target: str) -> Optional[str]:
+def scan_udp_port(target: str, port: int, family: int, timeout: float,
+                   engine: FingerprintEngine) -> Optional[dict]:
+    probe = UDP_PROBES.get(port, b"\x00")
+    sock = socket.socket(family, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
     try:
-        return socket.gethostbyname(target)
-    except socket.gaierror:
+        sock.sendto(probe, (target, port))
+        try:
+            data, _ = sock.recvfrom(2048)
+            banner = data.decode(errors="ignore").strip() or "No Banner"
+            state = "OPEN"
+        except socket.timeout:
+            banner = "No Banner"
+            state = "OPEN|FILTERED"
+        except ConnectionResetError:
+            return None  # ICMP port unreachable -> ferme
+
+        fingerprint = engine.analyze(banner, port)
+        return {"port": port, "protocol": "udp", "state": state, **asdict(fingerprint)}
+
+    except OSError:
         return None
+    finally:
+        sock.close()
 
 
 # ==========================================
 # Rapports
 # ==========================================
 
-def generate_txt_report(path, target, target_ip, start_port,
-                         end_port, results, duration):
+def build_metadata(target, target_ip, start_port, end_port, results, duration, protocols):
+    return {
+        "target": target,
+        "resolved_ip": target_ip,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "port_range": f"{start_port}-{end_port}",
+        "protocols_scanned": protocols,
+        "scan_duration_seconds": round(duration, 2),
+        "ports_scanned": (end_port - start_port + 1) * len(protocols),
+        "open_ports": len(results),
+    }
+
+
+def generate_txt_report(path, metadata, results):
     with open(path, "w", encoding="utf-8") as report:
-        report.write("Python Network Scanner V9 — Fingerprinting Engine\n")
+        report.write(f"Python Network Scanner v{VERSION} — Fingerprinting Engine\n")
         report.write("=" * 60 + "\n")
-        report.write(f"Target       : {target}\n")
-        report.write(f"Resolved IP  : {target_ip}\n")
-        report.write(f"Port range   : {start_port}-{end_port}\n")
-        report.write(f"Scan time    : {duration:.2f} seconds\n")
+        for key, value in metadata.items():
+            report.write(f"{key:<20}: {value}\n")
         report.write("=" * 60 + "\n\n")
 
         for r in results:
-            report.write(f"Port {r['port']:<5} {r['state']:<6}\n")
+            report.write(f"Port {r['port']:<5}/{r['protocol']:<3} {r['state']:<14}\n")
             report.write(f"Probable service : {r['probable_service']}\n")
             report.write(f"Detected service : {r['detected_service']}\n")
             report.write(f"Application      : {r['application'] or '-'}\n")
@@ -355,16 +404,8 @@ def generate_txt_report(path, target, target_ip, start_port,
         report.write(f"\nTotal open ports : {len(results)}\n")
 
 
-def generate_json_report(path, target, target_ip, start_port,
-                          end_port, results, duration):
-    payload = {
-        "target": target,
-        "resolved_ip": target_ip,
-        "port_range": f"{start_port}-{end_port}",
-        "scan_duration_seconds": round(duration, 2),
-        "total_open_ports": len(results),
-        "results": results,
-    }
+def generate_json_report(path, metadata, results):
+    payload = {"scan_metadata": metadata, "results": results}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
@@ -375,19 +416,25 @@ def generate_json_report(path, target, target_ip, start_port,
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Python Network Scanner V9 — Service Fingerprinting Engine"
+        description="Python Network Scanner — TCP/UDP scanning with service fingerprinting"
     )
-    parser.add_argument("target", help="IP address or hostname to scan")
+    parser.add_argument("target", help="IP address (v4/v6) or hostname to scan")
     parser.add_argument("-p", "--ports", default="1-1024",
                          help="Port range, e.g. 20-100 (default: 1-1024)")
     parser.add_argument("-t", "--threads", type=int, default=50,
                          help="Number of worker threads (default: 50)")
     parser.add_argument("--timeout", type=float, default=0.7,
-                         help="Per-port connection timeout in seconds (default: 0.7)")
+                         help="Per-port timeout in seconds (default: 0.7)")
+    parser.add_argument("--udp", action="store_true",
+                         help="Also scan UDP ports (slower, results can be ambiguous)")
     parser.add_argument("--json", action="store_true",
                          help="Also export results as JSON")
     parser.add_argument("-o", "--output", default="report",
                          help="Output file base name without extension (default: report)")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                         help="Do not print each open port during the scan")
+    parser.add_argument("--version", action="version",
+                         version=f"Python Network Scanner v{VERSION}\nService Fingerprinting Engine")
 
     args = parser.parse_args()
 
@@ -410,17 +457,21 @@ def parse_args():
 def main():
     args, start_port, end_port = parse_args()
 
-    print("\nPython Network Scanner V9 — Fingerprinting Engine")
+    print(f"\nPython Network Scanner v{VERSION} — Fingerprinting Engine")
     print("=" * 60)
 
-    target_ip = resolve_target(args.target)
+    target_ip, family = resolve_target(args.target)
     if target_ip is None:
         print("Error: unable to resolve target.")
         sys.exit(1)
 
+    ip_kind = "IPv6" if family == socket.AF_INET6 else "IPv4"
+    protocols = ["tcp", "udp"] if args.udp else ["tcp"]
+
     print(f"Target      : {args.target}")
-    print(f"Resolved IP : {target_ip}")
+    print(f"Resolved IP : {target_ip} ({ip_kind})")
     print(f"Port range  : {start_port}-{end_port}")
+    print(f"Protocols   : {', '.join(protocols)}")
     print(f"Threads     : {args.threads}")
     print(f"Timeout     : {args.timeout}s")
     print("=" * 60)
@@ -430,33 +481,42 @@ def main():
     start_time = time.perf_counter()
 
     with ThreadPoolExecutor(max_workers=args.threads) as executor:
-        futures = {
-            executor.submit(scan_port, target_ip, port, args.timeout, engine): port
-            for port in range(start_port, end_port + 1)
-        }
+        futures = {}
+
+        for port in range(start_port, end_port + 1):
+            futures[executor.submit(
+                scan_tcp_port, target_ip, port, family, args.timeout, engine
+            )] = port
+
+            if args.udp:
+                futures[executor.submit(
+                    scan_udp_port, target_ip, port, family, args.timeout, engine
+                )] = port
 
         for future in as_completed(futures):
             result = future.result()
             if result is not None:
                 results.append(result)
-                print(f"\nPort {result['port']:<5} OPEN")
-                print(f"Detected service : {result['detected_service']}")
-                print(f"Application      : {result['application'] or '-'}")
-                print(f"Version          : {result['version'] or '-'}")
-                print(f"Confidence       : {result['confidence']}")
-                print(f"Banner           : {result['banner'][:150]}")
+                if not args.quiet:
+                    print(f"\nPort {result['port']:<5}/{result['protocol']:<3} {result['state']}")
+                    print(f"Detected service : {result['detected_service']}")
+                    print(f"Application      : {result['application'] or '-'}")
+                    print(f"Version          : {result['version'] or '-'}")
+                    print(f"Confidence       : {result['confidence']}")
+                    print(f"Banner           : {result['banner'][:150]}")
 
-    results.sort(key=lambda item: item["port"])
+    results.sort(key=lambda item: (item["port"], item["protocol"]))
     duration = time.perf_counter() - start_time
 
+    metadata = build_metadata(args.target, target_ip, start_port, end_port,
+                               results, duration, protocols)
+
     txt_path = f"{args.output}.txt"
-    generate_txt_report(txt_path, args.target, target_ip,
-                         start_port, end_port, results, duration)
+    generate_txt_report(txt_path, metadata, results)
 
     if args.json:
         json_path = f"{args.output}.json"
-        generate_json_report(json_path, args.target, target_ip,
-                              start_port, end_port, results, duration)
+        generate_json_report(json_path, metadata, results)
 
     print("\n" + "=" * 60)
     print("Scan completed.")
